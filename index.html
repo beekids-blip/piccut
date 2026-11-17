@@ -21,6 +21,9 @@ h1{margin:0 0 2px;font-size:20px}p.sub{margin:0 0 14px;color:var(--mu);font-size
 label{font-size:13px;color:var(--mu);display:flex;gap:4px;align-items:center}
 input,select,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 10px}
 input[type=number]{width:76px}
+input[type=text]{width:100px}
+textarea{width:100%;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;resize:vertical}
+.it input.nm{width:100%;margin-bottom:2px}
 button{cursor:pointer}button:hover{border-color:var(--ac)}
 button.pri{background:var(--ac);color:#fff;border-color:var(--ac)}
 button:disabled{opacity:.45;cursor:not-allowed}
@@ -49,6 +52,24 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <span style="font-size:12px;color:var(--mu)">以旋轉後的圖為基準</span>
   </div>
 </div>
+<div class="card">
+  <div class="row">
+    <label><input type="checkbox" id="auto" checked>自動編號</label>
+    <label>前綴<input type="text" id="pre"></label>
+    <label>起始<input type="number" id="start" value="1" min="0"></label>
+    <label>位數<input type="number" id="digits" value="4" min="1" max="8"></label>
+    <button id="renum">重新編號</button>
+  </div>
+  <div class="row" style="margin-top:8px"><label><input type="checkbox" id="cont">下載 ZIP 後自動清空清單，並接續下一個編號</label></div>
+  <div style="font-size:12px;color:var(--mu);margin-top:6px">每張卡片下方的檔名欄也可以單獨修改。</div>
+</div>
+<div class="card">
+  <div class="row" style="margin-bottom:8px">
+    <label>圖片資料夾<input type="text" id="dir" value="images/"></label>
+    <button id="cp">複製程式碼</button><span id="cpmsg" style="font-size:13px;color:var(--mu)"></span>
+  </div>
+  <textarea id="code" rows="6" readonly placeholder="加入照片後，這裡會產生可貼到網站的程式碼"></textarea>
+</div>
 <div class="row" style="margin-bottom:12px">
   <button id="dlz" class="pri" disabled>下載全部（ZIP）</button>
   <button id="clr" disabled>清空</button>
@@ -63,6 +84,17 @@ const $=s=>document.querySelector(s);
 const items=[];
 const IDS=['rot','cx','cy','cw','ch'];
 const PDF_DPI=200;
+const NV=['pre','start','digits','dir'],NC=['auto','cont'];
+try{const p=JSON.parse(localStorage.getItem('cardNaming')||'null');if(p){NV.forEach(k=>{if(p[k]!==undefined)$('#'+k).value=p[k]});NC.forEach(k=>{if(p[k]!==undefined)$('#'+k).checked=p[k]})}}catch(e){}
+function persist2(){try{const o={};NV.forEach(k=>o[k]=$('#'+k).value);NC.forEach(k=>o[k]=$('#'+k).checked);localStorage.setItem('cardNaming',JSON.stringify(o))}catch(e){}}
+function applyNames(){
+  const pre=$('#pre').value,st=parseInt($('#start').value)||0,dg=Math.max(1,parseInt($('#digits').value)||1),auto=$('#auto').checked;
+  items.forEach((it,i)=>{if(it.base===undefined)it.base=it.name;if(it.manual)return;it.name=auto?pre+String(st+i).padStart(dg,'0'):it.base});
+}
+function updateCode(){
+  const dir=$('#dir').value,q=t=>String(t).split('\\').join('\\\\').split('"').join('\\"');
+  $('#code').value=items.map(it=>'  { image: "'+q(dir+it.name+'.jpg')+'", title: "", author: "", featured: false },').join('\n');
+}
 try{const p=JSON.parse(localStorage.getItem('cardCrop')||'null');if(p)IDS.forEach(k=>{if(p[k])$('#'+k).value=p[k]})}catch(e){}
 function params(){const g=k=>(parseFloat($('#'+k).value)||0)/100;return{x:g('cx'),y:g('cy'),w:g('cw'),h:g('ch')}}
 
@@ -127,16 +159,20 @@ async function addFiles(files){
 }
 function msg(t){$('#msg').textContent=t}
 function show(){
+  applyNames();
   const grid=$('#grid');grid.innerHTML='';
   items.forEach((it,i)=>{
     const c=convert(it.img),d=document.createElement('div');d.className='it';
-    d.innerHTML='<img alt=""><div class="n"></div><button>下載這一張</button>';
+    d.innerHTML='<img alt=""><input type="text" class="nm"><div class="n"></div><button>下載這一張</button>';
     d.querySelector('img').src=c.toDataURL('image/jpeg',.7);
-    d.querySelector('.n').textContent=it.name+'.jpg（'+c.width+' × '+c.height+'）';
+    const nm=d.querySelector('.nm');nm.value=it.name;
+    nm.oninput=()=>{it.name=nm.value.trim()||it.base;it.manual=true;updateCode()};
+    d.querySelector('.n').textContent='.jpg（'+c.width+' × '+c.height+'）';
     d.querySelector('button').onclick=async()=>save(it.name+'.jpg',await toBlob(convert(it.img)));
     grid.appendChild(d);
   });
   $('#dlz').disabled=$('#clr').disabled=!items.length;
+  updateCode();
 }
 async function save(filename,blob){
   try{const d=window.claude&&await claude.use('downloads');if(d){await d.save({filename,data:blob});return}}catch(e){if(e&&e.code==='declined')return}
@@ -150,13 +186,21 @@ $('#dlz').onclick=async()=>{
     let n=items[i].name;used[n]=(used[n]||0)+1;if(used[n]>1)n+='-'+used[n];
     z.file(n+'.jpg',await toBlob(convert(items[i].img)));
   }
-  await save('converted.zip',await z.generateAsync({type:'blob'}));$('#msg').textContent='';
+  await save('converted.zip',await z.generateAsync({type:'blob'}));msg('');
+  if($('#cont').checked&&$('#auto').checked){$('#start').value=(parseInt($('#start').value)||0)+items.length;persist2();items.length=0;show();msg('已下載，下一個編號從 '+$('#start').value+' 開始')}
 };
 $('#clr').onclick=()=>{items.length=0;show()};
 IDS.forEach(k=>$('#'+k).addEventListener('input',()=>{
   try{localStorage.setItem('cardCrop',JSON.stringify(Object.fromEntries(IDS.map(i=>[i,$('#'+i).value]))))}catch(e){}
   show();
 }));
+[...NV,...NC].forEach(k=>$('#'+k).addEventListener('input',()=>{persist2();if(k==='dir')updateCode();else show()}));
+$('#renum').onclick=()=>{items.forEach(it=>delete it.manual);show()};
+$('#cp').onclick=async()=>{
+  const t=$('#code').value;if(!t)return;
+  try{await navigator.clipboard.writeText(t)}catch(e){$('#code').select();document.execCommand('copy')}
+  $('#cpmsg').textContent='已複製';setTimeout(()=>$('#cpmsg').textContent='',1500);
+};
 const dz=$('#drop');dz.onclick=()=>$('#file').click();
 $('#file').onchange=e=>{addFiles(e.target.files);e.target.value=''};
 ['dragover','dragenter'].forEach(v=>dz.addEventListener(v,e=>{e.preventDefault();dz.classList.add('over')}));
