@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>掃描卡片轉換器</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--tx:#1f1f1d;--mu:#6b6a65;--bd:#dcdad3;--ac:#2f6fed;--ac2:#e8effd;color-scheme:light;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171716;--card:#232321;--tx:#ecebe6;--mu:#9a9992;--bd:#3a3a36;--ac:#6b9bff;--ac2:#26324d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#171716;--card:#232321;--tx:#ecebe6;--mu:#9a9992;--bd:#3a3a36;--ac:#6b9bff;--ac2:#26324d;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
+main{max-width:760px;margin:0 auto;padding:20px}
+h1{margin:0 0 2px;font-size:20px}p.sub{margin:0 0 14px;color:var(--mu);font-size:13px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+.drop{border:2px dashed var(--bd);border-radius:10px;padding:34px 10px;text-align:center;color:var(--mu);cursor:pointer}
+.drop.over{border-color:var(--ac);background:var(--ac2)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+label{font-size:13px;color:var(--mu);display:flex;gap:4px;align-items:center}
+input,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 10px}
+input[type=number]{width:76px}
+button{cursor:pointer}button:hover{border-color:var(--ac)}
+button.pri{background:var(--ac);color:#fff;border-color:var(--ac)}
+button:disabled{opacity:.45;cursor:not-allowed}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.it{border:1px solid var(--bd);border-radius:10px;padding:8px;background:var(--card)}
+.it img{width:100%;display:block;border-radius:6px;background:var(--bd)}
+.it .n{font-size:12px;color:var(--mu);margin:6px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.it button{width:100%}
+#msg{font-size:13px;color:var(--mu)}
+</style>
+</head>
+<body>
+<main>
+<h1>掃描卡片轉換器</h1>
+<p class="sub">上傳掃描檔，自動旋轉 90° 並裁切成固定尺寸。照片只在你的瀏覽器內處理，不會上傳。</p>
+<div class="card">
+  <div class="drop" id="drop">拖曳掃描檔到這裡，或點擊選擇<input type="file" id="file" multiple accept="image/*" hidden></div>
+</div>
+<div class="card">
+  <div class="row">
+    <label>X<input type="number" id="cx" value="10.4" step="0.1">%</label>
+    <label>Y<input type="number" id="cy" value="23.6" step="0.1">%</label>
+    <label>寬<input type="number" id="cw" value="79.0" step="0.1">%</label>
+    <label>高<input type="number" id="ch" value="55.9" step="0.1">%</label>
+    <span style="font-size:12px;color:var(--mu)">以旋轉後的圖為基準</span>
+  </div>
+</div>
+<div class="row" style="margin-bottom:12px">
+  <button id="dlz" class="pri" disabled>下載全部（ZIP）</button>
+  <button id="clr" disabled>清空</button>
+  <span id="msg"></span>
+</div>
+<div id="grid"></div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const items=[];
+const IDS=['cx','cy','cw','ch'];
+try{const p=JSON.parse(localStorage.getItem('cardCrop')||'null');if(p)IDS.forEach(k=>{if(p[k])$('#'+k).value=p[k]})}catch(e){}
+function params(){const g=k=>(parseFloat($('#'+k).value)||0)/100;return{x:g('cx'),y:g('cy'),w:g('cw'),h:g('ch')}}
+
+function convert(img){
+  const RW=img.width,RH=img.height; // 原始像素（不套用 EXIF）
+  const W=RH,H=RW;
+  const r=document.createElement('canvas');r.width=W;r.height=H;
+  const g=r.getContext('2d');g.translate(0,RW);g.rotate(-Math.PI/2);g.drawImage(img,0,0); // 向左（逆時針）轉 90°
+  const p=params();
+  const sx=Math.max(0,Math.round(p.x*W)),sy=Math.max(0,Math.round(p.y*H));
+  const sw=Math.max(1,Math.min(W-sx,Math.round(p.w*W))),sh=Math.max(1,Math.min(H-sy,Math.round(p.h*H)));
+  const o=document.createElement('canvas');o.width=sw;o.height=sh;
+  o.getContext('2d').drawImage(r,sx,sy,sw,sh,0,0,sw,sh);
+  return o;
+}
+const toBlob=c=>new Promise(res=>c.toBlob(res,'image/jpeg',.92));
+
+function addFiles(files){
+  [...files].filter(f=>f.type.startsWith('image/')).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).forEach(f=>{
+    const name=f.name.replace(/\.[^.]+$/,'');
+    createImageBitmap(f,{imageOrientation:'none'}).then(b=>{items.push({img:b,name});show()}).catch(()=>{
+      const img=new Image();img.onload=()=>{items.push({img,name});show()};img.src=URL.createObjectURL(f);
+    });
+  });
+}
+function show(){
+  const grid=$('#grid');grid.innerHTML='';
+  items.forEach((it,i)=>{
+    const c=convert(it.img),d=document.createElement('div');d.className='it';
+    d.innerHTML='<img alt=""><div class="n"></div><button>下載這一張</button>';
+    d.querySelector('img').src=c.toDataURL('image/jpeg',.7);
+    d.querySelector('.n').textContent=it.name+'.jpg（'+c.width+' × '+c.height+'）';
+    d.querySelector('button').onclick=async()=>save(it.name+'.jpg',await toBlob(convert(it.img)));
+    grid.appendChild(d);
+  });
+  $('#dlz').disabled=$('#clr').disabled=!items.length;
+}
+async function save(filename,blob){
+  try{const d=window.claude&&await claude.use('downloads');if(d){await d.save({filename,data:blob});return}}catch(e){if(e&&e.code==='declined')return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+}
+$('#dlz').onclick=async()=>{
+  if(!window.JSZip){$('#msg').textContent='ZIP 元件載入失敗，請改用單張下載';return}
+  const z=new JSZip(),used={};
+  for(let i=0;i<items.length;i++){
+    $('#msg').textContent='處理中 '+(i+1)+'/'+items.length;
+    let n=items[i].name;used[n]=(used[n]||0)+1;if(used[n]>1)n+='-'+used[n];
+    z.file(n+'.jpg',await toBlob(convert(items[i].img)));
+  }
+  await save('converted.zip',await z.generateAsync({type:'blob'}));$('#msg').textContent='';
+};
+$('#clr').onclick=()=>{items.length=0;show()};
+IDS.forEach(k=>$('#'+k).addEventListener('input',()=>{
+  try{localStorage.setItem('cardCrop',JSON.stringify(Object.fromEntries(IDS.map(i=>[i,$('#'+i).value]))))}catch(e){}
+  show();
+}));
+const dz=$('#drop');dz.onclick=()=>$('#file').click();
+$('#file').onchange=e=>{addFiles(e.target.files);e.target.value=''};
+['dragover','dragenter'].forEach(v=>dz.addEventListener(v,e=>{e.preventDefault();dz.classList.add('over')}));
+['dragleave','drop'].forEach(v=>dz.addEventListener(v,e=>{e.preventDefault();dz.classList.remove('over')}));
+dz.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+</script>
+</body>
+</html>
