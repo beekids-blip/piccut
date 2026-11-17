@@ -19,7 +19,7 @@ h1{margin:0 0 2px;font-size:20px}p.sub{margin:0 0 14px;color:var(--mu);font-size
 .drop.over{border-color:var(--ac);background:var(--ac2)}
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 label{font-size:13px;color:var(--mu);display:flex;gap:4px;align-items:center}
-input,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 10px}
+input,select,button{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:6px 10px}
 input[type=number]{width:76px}
 button{cursor:pointer}button:hover{border-color:var(--ac)}
 button.pri{background:var(--ac);color:#fff;border-color:var(--ac)}
@@ -35,12 +35,13 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <body>
 <main>
 <h1>掃描卡片轉換器</h1>
-<p class="sub">上傳掃描檔，自動旋轉 90° 並裁切成固定尺寸。照片只在你的瀏覽器內處理，不會上傳。</p>
+<p class="sub">可上傳 PDF 或圖片，自動旋轉並裁切成固定尺寸（PDF 會每頁各轉成一張）。照片只在你的瀏覽器內處理，不會上傳。</p>
 <div class="card">
-  <div class="drop" id="drop">拖曳掃描檔到這裡，或點擊選擇<input type="file" id="file" multiple accept="image/*" hidden></div>
+  <div class="drop" id="drop">拖曳 PDF／掃描檔到這裡，或點擊選擇<input type="file" id="file" multiple accept="image/*,application/pdf,.pdf" hidden></div>
 </div>
 <div class="card">
   <div class="row">
+    <label>旋轉<select id="rot"><option value="1">順時針 90°</option><option value="3">逆時針 90°</option><option value="2">180°</option><option value="0">不旋轉</option></select></label>
     <label>X<input type="number" id="cx" value="10.4" step="0.1">%</label>
     <label>Y<input type="number" id="cy" value="23.6" step="0.1">%</label>
     <label>寬<input type="number" id="cw" value="79.0" step="0.1">%</label>
@@ -56,18 +57,24 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <div id="grid"></div>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const items=[];
-const IDS=['cx','cy','cw','ch'];
+const IDS=['rot','cx','cy','cw','ch'];
+const PDF_DPI=200;
 try{const p=JSON.parse(localStorage.getItem('cardCrop')||'null');if(p)IDS.forEach(k=>{if(p[k])$('#'+k).value=p[k]})}catch(e){}
 function params(){const g=k=>(parseFloat($('#'+k).value)||0)/100;return{x:g('cx'),y:g('cy'),w:g('cw'),h:g('ch')}}
 
 function convert(img){
-  const RW=img.width,RH=img.height; // 原始像素（不套用 EXIF）
-  const W=RH,H=RW;
+  const RW=img.width,RH=img.height,k=parseInt($('#rot').value)||0; // 原始像素（不套用 EXIF）
+  const W=k%2?RH:RW,H=k%2?RW:RH;
   const r=document.createElement('canvas');r.width=W;r.height=H;
-  const g=r.getContext('2d');g.translate(RH,0);g.rotate(Math.PI/2);g.drawImage(img,0,0); // 向右（順時針）轉 90°
+  const g=r.getContext('2d');
+  if(k===1){g.translate(RH,0);g.rotate(Math.PI/2)}
+  else if(k===2){g.translate(RW,RH);g.rotate(Math.PI)}
+  else if(k===3){g.translate(0,RW);g.rotate(-Math.PI/2)}
+  g.drawImage(img,0,0);
   const p=params();
   const sx=Math.max(0,Math.round(p.x*W)),sy=Math.max(0,Math.round(p.y*H));
   const sw=Math.max(1,Math.min(W-sx,Math.round(p.w*W))),sh=Math.max(1,Math.min(H-sy,Math.round(p.h*H)));
@@ -77,14 +84,48 @@ function convert(img){
 }
 const toBlob=c=>new Promise(res=>c.toBlob(res,'image/jpeg',.92));
 
-function addFiles(files){
-  [...files].filter(f=>f.type.startsWith('image/')).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).forEach(f=>{
-    const name=f.name.replace(/\.[^.]+$/,'');
-    createImageBitmap(f,{imageOrientation:'none'}).then(b=>{items.push({img:b,name});show()}).catch(()=>{
-      const img=new Image();img.onload=()=>{items.push({img,name});show()};img.src=URL.createObjectURL(f);
-    });
-  });
+const isPdf=f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name);
+let pdfReady=false;
+async function initPdf(){
+  if(pdfReady)return;
+  if(!window.pdfjsLib)throw new Error('PDF 元件載入失敗，請確認網路連線');
+  const url='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const t=await (await fetch(url)).text();
+  pdfjsLib.GlobalWorkerOptions.workerSrc=URL.createObjectURL(new Blob([t],{type:'text/javascript'}));
+  pdfReady=true;
 }
+async function addPdf(f){
+  await initPdf();
+  const base=f.name.replace(/\.[^.]+$/,'');
+  const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+  const dg=Math.max(3,String(pdf.numPages).length);
+  for(let n=1;n<=pdf.numPages;n++){
+    msg('讀取 '+f.name+' 第 '+n+'/'+pdf.numPages+' 頁…');
+    const page=await pdf.getPage(n),vp=page.getViewport({scale:PDF_DPI/72});
+    const c=document.createElement('canvas');c.width=Math.round(vp.width);c.height=Math.round(vp.height);
+    const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);
+    await page.render({canvasContext:g,viewport:vp}).promise;
+    items.push({img:c,name:pdf.numPages>1?base+'-'+String(n).padStart(dg,'0'):base});
+    page.cleanup();
+  }
+}
+async function addImage(f){
+  const name=f.name.replace(/\.[^.]+$/,'');
+  let img;
+  try{img=await createImageBitmap(f,{imageOrientation:'none'})}
+  catch(e){img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=URL.createObjectURL(f)})}
+  items.push({img,name});
+}
+async function addFiles(files){
+  const arr=[...files].filter(f=>f.type.startsWith('image/')||isPdf(f)).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+  for(const f of arr){
+    try{if(isPdf(f))await addPdf(f);else await addImage(f)}
+    catch(e){msg('無法讀取 '+f.name+'：'+(e&&e.message||e));return}
+    show();
+  }
+  msg('');
+}
+function msg(t){$('#msg').textContent=t}
 function show(){
   const grid=$('#grid');grid.innerHTML='';
   items.forEach((it,i)=>{
@@ -102,7 +143,7 @@ async function save(filename,blob){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
 }
 $('#dlz').onclick=async()=>{
-  if(!window.JSZip){$('#msg').textContent='ZIP 元件載入失敗，請改用單張下載';return}
+  if(!window.JSZip){msg('ZIP 元件載入失敗，請改用單張下載');return}
   const z=new JSZip(),used={};
   for(let i=0;i<items.length;i++){
     $('#msg').textContent='處理中 '+(i+1)+'/'+items.length;
